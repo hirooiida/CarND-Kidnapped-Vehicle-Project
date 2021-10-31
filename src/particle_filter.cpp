@@ -137,9 +137,10 @@ void ParticleFilter::updateWeights(double sensor_range, double std_landmark[],
    *   (look at equation 3.33) http://planning.cs.uiuc.edu/node99.html
    */
   
+  double weights_sum = 0.0;
   double sig_x = std_landmark[0];
   double sig_y = std_landmark[1];
-  double gauss_norm = 1/(2 * M_PI * sig_x * sig_y);
+  double gauss_norm = 1 / (2 * M_PI * sig_x * sig_y);
   
   for (auto &p : particles) {
     
@@ -162,7 +163,7 @@ void ParticleFilter::updateWeights(double sensor_range, double std_landmark[],
       
       trans_obs.id = cur_obs.id;
       trans_obs.x = p.x + cur_obs.x * std::cos(p.theta) - cur_obs.y * std::sin(p.theta);
-      trans_obs.y = p.y + cur_obs.x * std::sin(p.theta) - cur_obs.y * std::cos(p.theta);
+      trans_obs.y = p.y + cur_obs.x * std::sin(p.theta) + cur_obs.y * std::cos(p.theta);
       
       trans_observations.push_back(trans_obs);
     }
@@ -191,11 +192,15 @@ void ParticleFilter::updateWeights(double sensor_range, double std_landmark[],
       double exponent = std::pow(pred_x - trans_x, 2) / (2 * std::pow(sig_x,2)) + std::pow(pred_y - trans_y, 2) / (2 * std::pow(sig_y, 2));
       p.weight *= gauss_norm * std::exp(-exponent);
       weights[p.id] = p.weight;
-      
-      // std::cout << "p.weight: " << p.weight << std::endl;
-      
+      weights_sum += p.weight;
     }
   }
+  
+  for (int i = 0; i < num_particles; i++) {
+    particles[i].weight /= weights_sum;
+    weights[i] = particles[i].weight;
+  }
+
 }
 
 void ParticleFilter::resample() {
