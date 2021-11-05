@@ -30,8 +30,32 @@ void ParticleFilter::init(double x, double y, double theta, double std[]) {
    * NOTE: Consult particle_filter.h for more information about this method 
    *   (and others in this file).
    */
-  num_particles = 0;  // TODO: Set the number of particles
-
+    
+  if (initialized()) {
+    return;
+  }
+  
+  num_particles = 100;  // TODO: Set the number of particles
+  
+  std::normal_distribution<double> dist_x(x, std[0]);
+  std::normal_distribution<double> dist_y(y, std[1]);
+  std::normal_distribution<double> dist_theta(theta, std[2]);
+  
+  std::default_random_engine engine;
+  for (int i = 0; i < num_particles; i++) {
+    Particle p;
+    p.id = i;
+    p.x = dist_x(engine);
+    p.y = dist_y(engine);
+    p.theta = dist_theta(engine);
+    p.weight = 1.0;
+    
+    particles.push_back(p);
+    weights.push_back(p.weight);
+  }
+  
+  is_initialized = true;
+  
 }
 
 void ParticleFilter::prediction(double delta_t, double std_pos[], 
@@ -43,7 +67,28 @@ void ParticleFilter::prediction(double delta_t, double std_pos[],
    *  http://en.cppreference.com/w/cpp/numeric/random/normal_distribution
    *  http://www.cplusplus.com/reference/random/default_random_engine/
    */
-
+  
+  std::normal_distribution<double> dist_x(0.0, std_pos[0]);
+  std::normal_distribution<double> dist_y(0.0, std_pos[1]);
+  std::normal_distribution<double> dist_theta(0.0, std_pos[2]);
+  
+  std::default_random_engine engine;
+  for (auto &p : particles) {
+        
+    if (fabs(yaw_rate) < 0.0001) {
+      p.x += velocity * delta_t * std::cos(p.theta);
+      p.y += velocity * delta_t * std::sin(p.theta);
+    } else {
+      p.x += (velocity / yaw_rate) * (std::sin(p.theta + yaw_rate * delta_t) - std::sin(p.theta));
+      p.y += (velocity / yaw_rate) * (std::cos(p.theta) - std::cos(p.theta + yaw_rate * delta_t));
+    }
+    
+    p.theta += yaw_rate * delta_t;
+    
+    p.x += dist_x(engine);
+    p.y += dist_y(engine);
+    p.theta += dist_theta(engine);
+  }
 }
 
 void ParticleFilter::dataAssociation(vector<LandmarkObs> predicted, 
@@ -56,7 +101,23 @@ void ParticleFilter::dataAssociation(vector<LandmarkObs> predicted,
    *   probably find it useful to implement this method and use it as a helper 
    *   during the updateWeights phase.
    */
-
+  
+  for (auto &o : observations) {
+    
+    double tmp_min_distance = 1000000.0;
+    int tmp_id = -1;
+    
+    for (auto &p : predicted) {
+      double cur_distance = dist(o.x, o.y, p.x, p.y);
+      
+      if (cur_distance < tmp_min_distance) {
+        tmp_min_distance = cur_distance;
+        tmp_id = p.id;
+      }
+    }
+    
+    o.id = tmp_id;
+  }
 }
 
 void ParticleFilter::updateWeights(double sensor_range, double std_landmark[], 
@@ -75,6 +136,70 @@ void ParticleFilter::updateWeights(double sensor_range, double std_landmark[],
    *   and the following is a good resource for the actual equation to implement
    *   (look at equation 3.33) http://planning.cs.uiuc.edu/node99.html
    */
+  
+  double weights_sum = 0.0;
+  double sig_x = std_landmark[0];
+  double sig_y = std_landmark[1];
+  double gauss_norm = 1 / (2 * M_PI * sig_x * sig_y);
+  
+  for (auto &p : particles) {
+    
+    vector<LandmarkObs> predicted;
+    for (unsigned int i = 0; i < map_landmarks.landmark_list.size(); i++) {
+      LandmarkObs obs;
+      obs.id = map_landmarks.landmark_list[i].id_i;
+      obs.x = map_landmarks.landmark_list[i].x_f;
+      obs.y = map_landmarks.landmark_list[i].y_f;
+      
+      if (dist(obs.x, obs.y, p.x, p.y) < sensor_range) {
+        predicted.push_back(obs);
+      }
+    }
+    
+    vector<LandmarkObs> trans_observations;
+    for (unsigned int i = 0; i < observations.size(); i++) {
+      LandmarkObs trans_obs;
+      LandmarkObs cur_obs = observations[i];
+      
+      trans_obs.id = cur_obs.id;
+      trans_obs.x = p.x + cur_obs.x * std::cos(p.theta) - cur_obs.y * std::sin(p.theta);
+      trans_obs.y = p.y + cur_obs.x * std::sin(p.theta) + cur_obs.y * std::cos(p.theta);
+      
+      trans_observations.push_back(trans_obs);
+    }
+    
+    dataAssociation(predicted, trans_observations);
+    
+    for (unsigned int i = 0; i < trans_observations.size(); i++) {
+      
+      double trans_x = trans_observations[i].x;
+      double trans_y = trans_observations[i].y;
+      int trans_id = trans_observations[i].id;
+      
+      double pred_x;
+      double pred_y;
+      p.weight = 1.0;
+      
+      for (unsigned int j = 0; j < predicted.size(); j++) {
+        
+        int pred_id = predicted[j].id;
+
+        if (pred_id == trans_id) {
+          pred_x = predicted[j].x;
+          pred_y = predicted[j].y;
+        }
+      }
+      double exponent = std::pow(pred_x - trans_x, 2) / (2 * std::pow(sig_x,2)) + std::pow(pred_y - trans_y, 2) / (2 * std::pow(sig_y, 2));
+      p.weight *= gauss_norm * std::exp(-exponent);
+      weights[p.id] = p.weight;
+      weights_sum += p.weight;
+    }
+  }
+  
+  for (int i = 0; i < num_particles; i++) {
+    particles[i].weight /= weights_sum;
+    weights[i] = particles[i].weight;
+  }
 
 }
 
@@ -85,7 +210,33 @@ void ParticleFilter::resample() {
    * NOTE: You may find std::discrete_distribution helpful here.
    *   http://en.cppreference.com/w/cpp/numeric/random/discrete_distribution
    */
-
+  
+  vector<Particle> new_particles;
+  
+  double max_weight = 0.0;
+  for (const auto &w : weights) {
+    if (w > max_weight) {
+      max_weight = w;
+    }
+  }
+  
+  std::default_random_engine engine;
+  std::uniform_real_distribution<double> dist_d(0.0, max_weight);
+  std::uniform_int_distribution<int> dist_i(0, num_particles - 1);
+  
+  int index = dist_i(engine);
+  double beta = 0.0;
+  
+  for (int i = 0; i < num_particles; i++) {
+    beta += dist_d(engine) * 2.0;
+    while (beta > weights[index]) {
+      beta -= weights[index];
+      index = (index + 1) % num_particles;
+    }
+    new_particles.push_back(particles[index]);
+  }
+  
+  particles = new_particles;
 }
 
 void ParticleFilter::SetAssociations(Particle& particle, 
